@@ -44,12 +44,36 @@ async def get_scripts():
 
 @app.post("/api/scripts/add")
 async def add_script(data: Dict):
-    symbol = data.get("symbol", "").upper()
+    symbol = data.get("symbol", "").strip().upper()
     if not symbol: return {"success": False, "message": "Symbol required"}
+    
+    # Auto-format for common shorthand
+    # 1. If no prefix, add NSE:
+    if ":" not in symbol:
+        symbol = f"NSE:{symbol}"
+    
+    # 2. If no suffix, check if it's a known index or option
+    if "-" not in symbol:
+        indices = ["NIFTY50", "NIFTYBANK", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "INDIAVIX", "SENSEX", "NIFTYNXT50"]
+        is_index = any(idx in symbol for idx in indices)
+        # Options usually have long numeric strings like NIFTY26505...
+        is_option = len(symbol) > 12 and any(char.isdigit() for char in symbol)
+        
+        if is_index:
+            symbol = f"{symbol}-INDEX"
+        elif not is_option:
+            symbol = f"{symbol}-EQ"
+    
+    # Special case: SBI -> SBIN
+    if "NSE:SBI-EQ" in symbol: symbol = "NSE:SBIN-EQ"
+    if "NSE:BANKNIFTY-INDEX" in symbol: symbol = "NSE:NIFTYBANK-INDEX"
+    if "NSE:BANKNIFTY-EQ" in symbol: symbol = "NSE:NIFTYBANK-INDEX"
+
     state.add_symbol(symbol)
     # Trigger an immediate WebSocket sync
-    on_data_open(sync_only=True)
-    return {"success": True, "scripts": state.active_symbols}
+    if data_socket_instance:
+        on_data_open(sync_only=True)
+    return {"success": True, "scripts": state.active_symbols, "formatted": symbol}
 
 @app.post("/api/scripts/remove")
 async def remove_script(data: Dict):
@@ -178,12 +202,12 @@ def on_data_error(err):
         if main_loop:
             asyncio.run_coroutine_threadsafe(broadcast_log(f"⚠️ Data Stream Error: {err}", "error"), main_loop)
 
-def on_data_close():
-    print("📡 Data Socket Closed.")
+def on_data_close(msg=None):
+    print(f"📡 Data Socket Closed: {msg}")
     global data_socket_instance
     data_socket_instance = None # Ensure it gets restarted by the background worker if authenticated
     if main_loop:
-        asyncio.run_coroutine_threadsafe(broadcast_log("📡 Data Stream Disconnected.", "warning"), main_loop)
+        asyncio.run_coroutine_threadsafe(broadcast_log(f"📡 Data Stream Disconnected: {msg}", "warning"), main_loop)
 
 def on_data_open(sync_only=False):
     """Subscribe to symbols once the socket is open."""
@@ -355,11 +379,11 @@ async def get_analysis(symbol="NSE:NIFTY50-INDEX"):
         vix = (vix_data or {}).get("lp", 15.0)
 
         # Parallelize historical candle fetches
-        # We use client.get_candles which is more reliable than get_historical
+        # Use get_historical instead of get_candles
         tasks = [
-            asyncio.to_thread(client.get_candles, symbol, "1", days=3),   # 1H candles (approx)
-            asyncio.to_thread(client.get_candles, symbol, "5", days=4),   # 5M candles
-            asyncio.to_thread(client.get_candles, symbol, "D", days=10),  # Daily candles
+            asyncio.to_thread(client.get_historical, symbol, "60", days_back=3),  # 1H candles
+            asyncio.to_thread(client.get_historical, symbol, "5", days_back=4),   # 5M candles
+            asyncio.to_thread(client.get_historical, symbol, "D", days_back=10),  # Daily candles
         ]
         
         candles_1h, candles_5m, candles_daily = await asyncio.gather(*tasks)
@@ -607,6 +631,20 @@ async def get_analysis(symbol="NSE:NIFTY50-INDEX"):
         log_signal([top_sig], spot, action_status, trade_details)
 
     return result
+
+@app.get("/api/analysis")
+async def get_analysis_api(symbol: str = "NSE:NIFTY50-INDEX"):
+    """Fetch analysis for a specific symbol."""
+    res = await get_analysis(symbol)
+    if res: return res
+    raise HTTPException(429, f"Rate limited or no data for {symbol}")
+
+@app.get("/api/candles")
+async def get_candles_api(symbol: str = "NSE:NIFTY50-INDEX", resolution: str = "5", days: int = 3):
+    """Fetch candles for a specific symbol."""
+    client = get_client()
+    candles = await asyncio.to_thread(client.get_historical, symbol, resolution, days_back=days)
+    return {"candles": candles}
 
 
 @app.get("/api/test-signal")
@@ -930,7 +968,7 @@ async def market_data_worker():
                 total_pnl = sum(p.get("pl", 0) for p in positions)
                 state.update_pnl(total_pnl)
                 _market_cache["positions"] = positions
-                _market_cache["active_positions"] = [p for p in positions if p.get("qty", 0) != 0]
+                _market_cache["active_positions"] = [p for p in positions if p.get("netQty", 0) != 0]
                 _market_cache["total_pnl"] = round(total_pnl, 2)
                 
                 # Auto-trade cleanup
@@ -998,14 +1036,24 @@ async def market_data_worker():
             try:
                 ist = pytz.timezone('Asia/Kolkata')
                 now_ist = datetime.now(ist)
-                if now_ist.hour == 15 and now_ist.minute >= 15:
+                # Only run between 15:15 and 15:30 to avoid continuous loops all evening
+                if now_ist.hour == 15 and 15 <= now_ist.minute <= 30:
                     active_pos = _market_cache.get("active_positions", [])
                     if active_pos:
-                        await broadcast_log(f"⏰ HARD EXIT (15:15 IST): Squaring off {len(active_pos)} positions.", "warning")
-                        for p in active_pos:
-                            try:
-                                client.place_order(symbol=p["symbol"], qty=abs(p["qty"]), side="SELL" if p["qty"] > 0 else "BUY")
-                            except: pass
+                        # Use a local flag or state to avoid spamming every 3 seconds
+                        if not getattr(state, 'hard_exit_triggered', False):
+                            await broadcast_log(f"⏰ HARD EXIT (15:15 IST): Squaring off {len(active_pos)} positions.", "warning")
+                            for p in active_pos:
+                                try:
+                                    qty = abs(p.get("netQty", 0))
+                                    if qty > 0:
+                                        client.place_order(symbol=p["symbol"], qty=qty, side="SELL" if p["netQty"] > 0 else "BUY")
+                                except Exception as e:
+                                    print(f"❌ Hard Exit order failed for {p['symbol']}: {e}")
+                            state.hard_exit_triggered = True
+                else:
+                    # Reset flag outside the window so it works tomorrow
+                    state.hard_exit_triggered = False
             except Exception as e:
                 print(f"⚠️ Hard Exit Monitor Error: {e}")
 

@@ -55,32 +55,81 @@ function applyTheme() {
     });
   }
 }
- // --- SCRIP MANAGEMENT ---
+let activeSymbol = "NSE:NIFTY50-INDEX";
+let activeScripts = [];
+let lastMarketData = {};
+
+async function selectScript(symbol) {
+  activeSymbol = symbol;
+  showToast(`Switching chart to ${symbol.replace('NSE:','')}`, 'info');
+  
+  // Highlight the row in UI
+  renderScriptsList();
+  
+  // Update header immediately
+  const spotData = lastMarketData[symbol];
+  if (spotData) {
+      updateSpotLive({
+          symbol: symbol,
+          spot: spotData.lp,
+          change: spotData.change,
+          change_pct: spotData.change_pct,
+          vix: lastMarketData.vix?.lp || 0,
+          vix_change: lastMarketData.vix?.change || 0
+      });
+  }
+
+  // Refresh data
+  await fetchAnalysis();
+  await fetchCandles();
+}
+
 async function fetchScripts() {
   try {
     const res = await fetch('/api/scripts');
     const data = await res.json();
-    renderScriptsList(data.scripts);
+    activeScripts = data.scripts || [];
+    renderScriptsList();
   } catch (e) {
     console.error("Failed to fetch scripts:", e);
   }
 }
 
-function renderScriptsList(scripts) {
+function renderScriptsList(liveData = null) {
   const container = document.getElementById('scriptList');
   if (!container) return;
   
-  if (!scripts || scripts.length === 0) {
-    container.innerHTML = '<div style="font-size:11px;color:var(--text-muted)">No active scrips.</div>';
+  if (liveData) lastMarketData = liveData;
+  const dataMap = lastMarketData || {};
+  
+  if (!activeScripts || activeScripts.length === 0) {
+    container.innerHTML = '<tr><td colspan="5" style="padding:20px; text-align:center; color:var(--text-muted);">No active scrips.</td></tr>';
     return;
   }
   
-  container.innerHTML = scripts.map(s => `
-    <div class="script-tag" style="display:flex; align-items:center; gap:6px; background:rgba(0,102,255,0.1); padding:4px 10px; border-radius:12px; font-size:11px; border:1px solid var(--accent-blue);">
-      <span style="font-weight:600">${s.replace('NSE:', '').replace('-INDEX', '').replace('-EQ', '')}</span>
-      <span onclick="removeScript('${s}')" style="cursor:pointer; color:red; font-weight:bold; font-size:14px; line-height:1">×</span>
-    </div>
-  `).join('');
+  container.innerHTML = activeScripts.map(s => {
+    const d = dataMap[s] || {};
+    const lp = d.lp || 0;
+    const ch = d.change || 0;
+    const chp = d.change_pct || 0;
+    const color = ch >= 0 ? 'var(--pnl-positive)' : 'var(--pnl-negative)';
+    const sign = ch >= 0 ? '+' : '';
+    const isSelected = s === activeSymbol;
+    const bg = isSelected ? 'rgba(0,102,255,0.1)' : 'transparent';
+    const border = isSelected ? '1px solid var(--accent-blue)' : '1px solid transparent';
+    
+    return `
+      <tr onclick="selectScript('${s}')" style="border-bottom: 1px solid rgba(0,0,0,0.05); cursor:pointer; background:${bg}; transition: background 0.2s;">
+        <td style="padding:8px 12px; font-weight:400; color:var(--text-main); font-size:13px;">${s.replace('NSE:', '')}</td>
+        <td style="padding:8px 12px; text-align:right; font-weight:400; color:${color}; font-size:13px;">${lp > 0 ? lp.toFixed(2) : '--'}</td>
+        <td style="padding:8px 12px; text-align:right; color:${color}; font-size:13px;">${lp > 0 ? sign + ch.toFixed(2) : '--'}</td>
+        <td style="padding:8px 12px; text-align:right; color:${color}; font-size:13px;">${lp > 0 ? sign + chp.toFixed(2) + '%' : '--'}</td>
+        <td style="padding:8px 12px; text-align:center;" onclick="event.stopPropagation()">
+          <span onclick="removeScript('${s}')" style="cursor:pointer; color:#999; font-size:14px;">🗑️</span>
+        </td>
+      </tr>
+    `;
+  }).join('');
 }
 
 async function addScript() {
@@ -97,7 +146,8 @@ async function addScript() {
     });
     const data = await res.json();
     if (data.success) {
-      renderScriptsList(data.scripts);
+      activeScripts = data.scripts || [];
+      renderScriptsList();
       input.value = '';
       showToast('Scrip added', 'success');
     } else {
@@ -120,7 +170,8 @@ async function removeScript(symbol) {
     });
     const data = await res.json();
     if (data.success) {
-      renderScriptsList(data.scripts);
+      activeScripts = data.scripts || [];
+      renderScriptsList();
       showToast('Scrip removed', 'success');
     }
   } catch (e) {
@@ -425,15 +476,28 @@ function connectWebSocket() {
         renderStrikes(analysisData.strike_recommendations);
         break;
       case 'market_update':
-        // Update Nifty as primary spot in header
-        if (data.spots["NSE:NIFTY50-INDEX"]) {
+        // Update header with the activeSymbol
+        let displayData = data.spots[activeSymbol];
+        
+        if (!displayData && activeSymbol === "NSE:NIFTY50-INDEX") {
+            // Fallback if Nifty is missing but active
+            const firstSym = Object.keys(data.spots)[0];
+            if (firstSym) displayData = data.spots[firstSym];
+        }
+
+        if (displayData) {
             updateSpotLive({
-                lp: data.spots["NSE:NIFTY50-INDEX"].lp,
-                chp: data.spots["NSE:NIFTY50-INDEX"].change_pct,
+                symbol: activeSymbol,
+                spot: displayData.lp,
+                change: displayData.change,
+                change_pct: displayData.change_pct,
                 vix: data.vix.lp,
                 vix_change: data.vix.change
             });
         }
+        
+        // Refresh the Market Watch table
+        renderScriptsList(data.spots);
         break;
     }
   };
@@ -451,21 +515,34 @@ function connectWebSocket() {
 }
 
 function updateSpotLive(data) {
-  document.getElementById('spotPrice').textContent = '₹' + Number(data.spot).toLocaleString('en-IN', { minimumFractionDigits: 2 });
+  if (!data) return;
+  const spot = data.spot || data.lp || 0;
+  const change = data.change || 0;
+  const change_pct = data.change_pct || data.chp || 0;
+  const vix = data.vix || 0;
+  const vix_change = data.vix_change || 0;
+  const symbol = data.symbol?.replace('NSE:', '').replace('-INDEX', '').replace('-EQ', '') || 'NIFTY';
+
+  const spotLabel = document.getElementById('spotLabel');
+  if (spotLabel) {
+      spotLabel.textContent = symbol;
+  }
+
+  document.getElementById('spotPrice').textContent = '₹' + Number(spot).toLocaleString('en-IN', { minimumFractionDigits: 2 });
 
   const changeEl = document.getElementById('spotChange');
-  const sign = data.change >= 0 ? '+' : '';
-  changeEl.textContent = `${sign}${data.change.toFixed(2)} (${sign}${data.change_pct.toFixed(2)}%)`;
-  changeEl.className = 'spot-change ' + (data.change >= 0 ? 'positive' : 'negative');
+  const sign = change >= 0 ? '+' : '';
+  changeEl.textContent = `${sign}${change.toFixed(2)} (${sign}${change_pct.toFixed(2)}%)`;
+  changeEl.className = 'spot-change ' + (change >= 0 ? 'positive' : 'negative');
 
-  document.getElementById('vixValue').textContent = data.vix.toFixed(2);
+  document.getElementById('vixValue').textContent = Number(vix).toFixed(2);
   const vixChEl = document.getElementById('vixChange');
-  const vSign = data.vix_change >= 0 ? '+' : '';
-  vixChEl.textContent = `${vSign}${data.vix_change.toFixed(2)}%`;
-  vixChEl.className = 'spot-change ' + (data.vix_change >= 0 ? 'negative' : 'positive');
+  const vSign = vix_change >= 0 ? '+' : '';
+  vixChEl.textContent = `${vSign}${Number(vix_change).toFixed(2)}%`;
+  vixChEl.className = 'spot-change ' + (vix_change >= 0 ? 'negative' : 'positive');
 
   // Update live spot lines on chart
-  const spotPrice = Number(data.spot);
+  const spotPrice = Number(spot);
 
   if (series5m && spotPrice > 0) {
     if (!liveSpotLine5m) {
@@ -560,7 +637,7 @@ async function fetchCandles() {
   btn.textContent = '...';
 
   try {
-    const resp5m = await fetch('/api/candles/5?days=3');
+    const resp5m = await fetch(`/api/candles?symbol=${activeSymbol}&resolution=5&days=3`);
     const data5m = await resp5m.json();
 
     // Convert to Lightweight Charts format (add IST offset)
@@ -625,7 +702,7 @@ function loadVisibilityPrefs() {
 
 async function fetchAnalysis() {
   try {
-    const resp = await fetch('/api/analysis');
+    const resp = await fetch(`/api/analysis?symbol=${activeSymbol}`);
     if (!resp.ok) {
         const errorData = await resp.json().catch(() => ({}));
         console.warn('Analysis fetch partially failed:', errorData.detail || 'Rate Limited');

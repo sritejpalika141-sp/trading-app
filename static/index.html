@@ -15,7 +15,7 @@
     <div class="header-left">
       <div class="logo">⚡ NIFTY Trader</div>
       <div class="spot-display">
-        <span style="color:var(--text-muted);font-size:11px">NIFTY 50</span>
+        <span id="spotLabel" style="color:var(--text-muted);font-size:11px">NIFTY 50</span>
         <span class="spot-price" id="spotPrice">--</span>
         <span class="spot-change" id="spotChange">--</span>
       </div>
@@ -73,22 +73,6 @@
 
     <!-- RIGHT PANEL -->
     <div class="right-panel">
-      <!-- Key Levels -->
-      <div class="card" id="keyLevelsCard" style="flex:0 0 auto;max-height:30px;transition:max-height 0.3s ease;">
-        <div class="card-header">
-          <span class="card-title" style="cursor:pointer" onclick="toggleCard('keyLevelsCard', '200px')">🔑 Key Levels</span>
-          <div style="display:flex;align-items:center;gap:8px">
-            <span style="font-size:11px;color:var(--text-muted)" id="levelCount">0</span>
-            <button class="icon-btn-sm" onclick="toggleCard('keyLevelsCard', '200px')">
-              <span id="keyLevelsToggleIcon">▶</span>
-            </button>
-          </div>
-        </div>
-        <div class="card-body" id="keyLevelsContainer" style="display:none">
-          <div class="loading"><div class="spinner"></div>Loading...</div>
-        </div>
-      </div>
-
       <!-- Market Watch -->
       <div class="card" id="marketWatchCard">
         <div class="card-header">
@@ -98,9 +82,22 @@
             <button class="btn-buy" onclick="addScript()" style="padding:4px 8px; font-size:11px;">Add</button>
           </div>
         </div>
-        <div class="card-body" id="scriptList" style="display:flex; flex-wrap:wrap; gap:8px; padding:10px;">
-          <!-- Scripts will be rendered here -->
-          <div class="loading">Loading scrips...</div>
+        <div class="card-body" style="padding:0;">
+          <table class="market-watch-table" style="width:100%; border-collapse: collapse; font-size:12px;">
+            <thead style="background: rgba(0,0,0,0.05); color: var(--text-muted);">
+              <tr>
+                <th style="text-align:left; padding:8px 12px; font-weight:500;">Symbol</th>
+                <th style="text-align:right; padding:8px 12px; font-weight:500;">Last</th>
+                <th style="text-align:right; padding:8px 12px; font-weight:500;">Chg</th>
+                <th style="text-align:right; padding:8px 12px; font-weight:500;">Chg%</th>
+                <th style="width:30px;"></th>
+              </tr>
+            </thead>
+            <tbody id="scriptList">
+              <!-- Rows will be rendered here -->
+              <tr><td colspan="5" style="padding:20px; text-align:center; color:var(--text-muted);">Loading scrips...</td></tr>
+            </tbody>
+          </table>
         </div>
       </div>
 
@@ -156,6 +153,22 @@
           </button>
         </div>
         <div class="card-body" id="historyContainer" style="display:none;">
+          <div class="loading"><div class="spinner"></div>Loading...</div>
+        </div>
+      </div>
+
+      <!-- Key Levels -->
+      <div class="card" id="keyLevelsCard" style="flex:0 0 auto;max-height:30px;transition:max-height 0.3s ease;">
+        <div class="card-header">
+          <span class="card-title" style="cursor:pointer" onclick="toggleCard('keyLevelsCard', '200px')">🔑 Key Levels</span>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="font-size:11px;color:var(--text-muted)" id="levelCount">0</span>
+            <button class="icon-btn-sm" onclick="toggleCard('keyLevelsCard', '200px')">
+              <span id="keyLevelsToggleIcon">▶</span>
+            </button>
+          </div>
+        </div>
+        <div class="card-body" id="keyLevelsContainer" style="display:none">
           <div class="loading"><div class="spinner"></div>Loading...</div>
         </div>
       </div>
