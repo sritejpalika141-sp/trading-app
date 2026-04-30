@@ -32,7 +32,8 @@ os.makedirs(LOG_DIR, exist_ok=True)
 
 load_dotenv(ENV_PATH)
 
-app = FastAPI(title="NIFTY Trading Dashboard")
+app = FastAPI(title="Sritej Trading Dashboard")
+VERSION = "2.1.1"
 state = TradingState()
 
 # Performance-optimized Global Caches
