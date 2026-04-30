@@ -37,17 +37,28 @@ VERSION = "2.1.1"
 state = TradingState()
 
 # Performance-optimized Global Caches
-# --- CONFIGURATION ---
-ACTIVE_SYMBOLS = [
-    "NSE:NIFTY50-INDEX", 
-    "NSE:NIFTYBANK-INDEX", 
-    "NSE:MIDCPNIFTY-INDEX",
-    "NSE:FINNIFTY-INDEX",
-    "NSE:RELIANCE-EQ",
-    "NSE:HDFCBANK-EQ",
-    "NSE:ICICIBANK-EQ",
-    "NSE:TCS-EQ"
-]
+# Configuration now managed via state.active_symbols
+@app.get("/api/scripts")
+async def get_scripts():
+    return {"scripts": state.active_symbols}
+
+@app.post("/api/scripts/add")
+async def add_script(data: Dict):
+    symbol = data.get("symbol", "").upper()
+    if not symbol: return {"success": False, "message": "Symbol required"}
+    state.add_symbol(symbol)
+    # Trigger an immediate WebSocket sync
+    on_data_open(sync_only=True)
+    return {"success": True, "scripts": state.active_symbols}
+
+@app.post("/api/scripts/remove")
+async def remove_script(data: Dict):
+    symbol = data.get("symbol", "")
+    if not symbol: return {"success": False, "message": "Symbol required"}
+    state.remove_symbol(symbol)
+    # Trigger an immediate WebSocket sync
+    on_data_open(sync_only=True)
+    return {"success": True, "scripts": state.active_symbols}
 
 _analysis_cache = {
     "data": {"signals": [], "strike_recommendations": [], "key_levels": []},
@@ -102,7 +113,7 @@ def on_data_message(msg):
     if symbol == "NSE:INDIAVIX-INDEX":
         _market_cache["vix"] = { "lp": price, "ch": msg.get("ch", 0), "chp": msg.get("chp", 0) }
         updated = True
-    elif symbol in ACTIVE_SYMBOLS:
+    elif symbol in state.active_symbols:
         _market_cache["spot"][symbol] = {
             "lp": price,
             "ch": msg.get("ch", 0),
@@ -180,7 +191,7 @@ def on_data_open(sync_only=False):
     if not sync_only:
         print("📡 Data Socket Opened.")
     if data_socket_instance:
-        symbols = ACTIVE_SYMBOLS + ["NSE:INDIAVIX-INDEX"]
+        symbols = state.active_symbols + ["NSE:INDIAVIX-INDEX"]
         # Subscribe to any already recommended strikes
         for base in _market_cache.get("strikes", {}):
             for key in ["ce", "pe"]:
@@ -250,10 +261,10 @@ async def get_status():
 async def get_spot():
     """Get live NIFTY spot price and VIX."""
     client = get_client()
-    quotes = client.get_quotes(ACTIVE_SYMBOLS + ["NSE:INDIAVIX-INDEX"])
+    quotes = client.get_quotes(state.active_symbols + ["NSE:INDIAVIX-INDEX"])
 
     # Transform for compatibility
-    res = {symbol: quotes.get(symbol, {}) for symbol in ACTIVE_SYMBOLS}
+    res = {symbol: quotes.get(symbol, {}) for symbol in state.active_symbols}
     res["vix"] = quotes.get("NSE:INDIAVIX-INDEX", {})
     return res
 
@@ -312,90 +323,63 @@ async def auth_status():
         return {"authenticated": False}
 
 
-            print("🧹 Discarding stale analysis cache from a different day.")
-            _analysis_cache["data"] = None
-
-    # Return cached analysis if less than 30s old
-    if _analysis_cache["data"] and (now_ts - _analysis_cache["timestamp"] < 30):
-        return _analysis_cache["data"]
+async def get_analysis(symbol="NSE:NIFTY50-INDEX"):
+    """
+    Core analysis logic for a specific symbol.
+    Fetches historical data, detects levels, and generates signals.
+    """
+    now = datetime.now()
+    now_ts = now.timestamp()
+    
+    # 15-second cache to respect Fyers API limits
+    if symbol in _market_cache["analysis"]:
+        cache = _market_cache["analysis"][symbol]
+        if cache:
+            cache_time = datetime.fromtimestamp(cache.get("timestamp", 0))
+            if cache_time.date() == now.date() and (now_ts - cache.get("timestamp", 0) < 15):
+                return cache["data"]
 
     client = get_client()
-
     try:
-        # Use cached spot and VIX if available to save API calls
-        cached_spot = _market_cache.get("spot")
-        cached_vix = _market_cache.get("vix")
+        # Use cached spot and VIX
+        spot_data = _market_cache["spot"].get(symbol)
+        vix_data = _market_cache.get("vix")
         
-        spot = (cached_spot or {}).get("lp", 0)
-        vix = (cached_vix or {}).get("lp", 0)
+        if not spot_data:
+            # Fallback to direct quote
+            quotes = await asyncio.to_thread(client.get_quotes, [symbol])
+            spot_data = quotes.get(symbol)
+            if not spot_data: return None
+        
+        spot = spot_data.get("lp", 0)
+        vix = (vix_data or {}).get("lp", 15.0)
 
-        # If cache is missing, try one last fetch (but only if we don't have 429s)
-        if spot == 0:
-            spot_data = await asyncio.to_thread(client.get_quote, "NSE:NIFTY50-INDEX")
-            spot = spot_data.get("lp", 0) if spot_data else 0
+        # Parallelize historical candle fetches
+        # We use client.get_candles which is more reliable than get_historical
+        tasks = [
+            asyncio.to_thread(client.get_candles, symbol, "1", days=3),   # 1H candles (approx)
+            asyncio.to_thread(client.get_candles, symbol, "5", days=4),   # 5M candles
+            asyncio.to_thread(client.get_candles, symbol, "D", days=10),  # Daily candles
+        ]
         
-        if spot == 0:
-            # Fallback to last known analysis price if everything fails
-            if _analysis_cache["data"]: return _analysis_cache["data"]
-            raise HTTPException(500, "Could not fetch spot price (API Rate Limited)")
-
-        # Parallelize all historical candle fetches (with 15s timeout)
-        h1_task = asyncio.to_thread(client.get_historical, "NSE:NIFTY50-INDEX", "60", 15)
-        m5_task = asyncio.to_thread(client.get_historical, "NSE:NIFTY50-INDEX", "5", 3)
-        daily_task = asyncio.to_thread(client.get_historical, "NSE:NIFTY50-INDEX", "D", 5)
-        
-        try:
-            candles_1h, candles_5m, candles_daily = await asyncio.wait_for(
-                asyncio.gather(h1_task, m5_task, daily_task), timeout=15
-            )
-        except asyncio.TimeoutError:
-            print("⏱️ Candle fetch timed out (15s)")
-            if _analysis_cache["data"]:
-                print("⚠️ Serving stale cache due to timeout.")
-                return _analysis_cache["data"]
-            raise HTTPException(504, "Fyers API timeout fetching candle data")
+        candles_1h, candles_5m, candles_daily = await asyncio.gather(*tasks)
 
         if not candles_1h or not candles_5m:
-            # If rate limited, return last good cache but older
-            if _analysis_cache["data"]:
-                print("⚠️ Rate limited. Serving stale cache.")
-                _analysis_cache["timestamp"] = now_ts 
-                return _analysis_cache["data"]
-            
-            # If no cache exists, return a SKELETON instead of a 500 error
-            # This prevents the frontend from crashing.
-            return {
-                "signals": [],
-                "strike_recommendations": [],
-                "trend": {"trend": "NEUTRAL", "strength": 0},
-                "key_levels": [],
-                "order_blocks": [],
-                "active_order_blocks": [],
-                "fvgs": [],
-                "bos_events": [],
-                "spot": spot,
-                "vix": vix,
-                "candles_5m": [],
-                "timestamp": now_ts,
-                "message": "Waiting for Fyers API rate limits to clear..."
-            }
+            return None
 
         # Run signal engine
         result = generate_signals(candles_1h, candles_5m, spot, candles_daily, vix)
 
-        # Find nearest expiry (Check market cache first for speed, fallback to API)
-        expiry = _market_cache.get("expiry")
+        # Find nearest expiry
+        expiry = (_market_cache.get("strikes", {}).get(symbol) or {}).get("expiry")
         if not expiry:
             try:
-                expiry = await asyncio.wait_for(
-                    asyncio.to_thread(client.find_nearest_expiry, spot), timeout=10
-                )
-            except asyncio.TimeoutError:
-                print("⏱️ Expiry fetch timed out")
+                expiry = await asyncio.to_thread(client.find_nearest_expiry, spot)
+            except:
                 expiry = None
         result["expiry"] = expiry
 
-        # Filter OBs and FVGs strictly near Key Levels (per user request for clarity)
+        # Filter OBs and FVGs strictly near Key Levels
         filtered_obs = []
         for ob in result.get("order_blocks", []):
             is_near = False
@@ -404,8 +388,7 @@ async def auth_status():
                    abs(ob["bottom"] - kl["price"]) / kl["price"] < 0.004:
                     is_near = True
                     break
-            if is_near:
-                filtered_obs.append(ob)
+            if is_near: filtered_obs.append(ob)
         
         filtered_fvgs = []
         for fvg in result.get("fvgs", []):
@@ -415,23 +398,18 @@ async def auth_status():
                    abs(fvg["bottom"] - kl["price"]) / kl["price"] < 0.004:
                     is_near = True
                     break
-            if is_near:
-                filtered_fvgs.append(fvg)
+            if is_near: filtered_fvgs.append(fvg)
         
         result["order_blocks"] = filtered_obs
         result["fvgs"] = filtered_fvgs
         result["active_order_blocks"] = [ob for ob in filtered_obs if ob.get("active")]
-
-        # Include 5m candles in the result
         result["candles_5m"] = candles_5m
         
         # Filter out skipped signals
         if result["signals"]:
             filtered_signals = []
             for sig in result["signals"]:
-                # Attach the symbol to the signal for the UI
                 sig["symbol"] = symbol
-                # Round bottom to 2 decimal places to be robust against float precision issues
                 bottom = round(sig.get('entry_zone_bottom', 0), 2)
                 sig_id = f"{sig.get('type')}_{sig.get('reason')}_{bottom}"
                 if sig_id not in state.skipped_signals:
@@ -443,6 +421,11 @@ async def auth_status():
             "data": result,
             "timestamp": now_ts
         }
+        return result
+        
+    except Exception as e:
+        print(f"⚠️ Analysis failed for {symbol}: {e}")
+        return None
         
         # === SIGNAL LOCK LOGIC ===
         global _signal_lock
@@ -870,7 +853,7 @@ async def market_data_worker():
             # 1. Quotes (Fallback Polling if WebSocket is stale > 10s)
             is_stale = (datetime.now().timestamp() - _market_cache.get("last_update", 0)) > 10
             if is_stale:
-                base_symbols = ACTIVE_SYMBOLS + ["NSE:INDIAVIX-INDEX"]
+                base_symbols = state.active_symbols + ["NSE:INDIAVIX-INDEX"]
                 for base in _market_cache.get("strikes", {}):
                     for side in ["ce", "pe"]:
                         for s in _market_cache["strikes"][base].get(side, []):
@@ -883,12 +866,12 @@ async def market_data_worker():
 
             # 3. Analysis (every 30s) for all active symbols
             if tick % 10 == 0:
-                for symbol in ACTIVE_SYMBOLS:
+                for symbol in state.active_symbols:
                     task_defs[f"analysis_{symbol}"] = get_analysis(symbol)
 
             # 3. Option Chain Refresh (every 40s) for indices
             if tick % 15 == 0:
-                for symbol in ACTIVE_SYMBOLS:
+                for symbol in state.active_symbols:
                     if "INDEX" in symbol:
                         task_defs[f"chain_{symbol}"] = None # Handled below manually to stay safe
             if tick % 15 == 0:
@@ -920,7 +903,7 @@ async def market_data_worker():
                 else:
                     await broadcast_log(f"❌ Fyers API Error: {msg}", "error")
             else:
-                for symbol in ACTIVE_SYMBOLS:
+                for symbol in state.active_symbols:
                     if symbol in quotes:
                         _market_cache["spot"][symbol] = quotes[symbol]
                 
@@ -988,7 +971,7 @@ async def market_data_worker():
 
             # --- OPTION CHAIN SEQUENTIAL REFRESH (to avoid more 429) ---
             if tick % 15 == 0:
-                for symbol in ACTIVE_SYMBOLS:
+                for symbol in state.active_symbols:
                     if "INDEX" not in symbol: continue
                     cached_spot = _market_cache["spot"].get(symbol)
                     spot = (cached_spot or {}).get("lp", 0)
@@ -1075,7 +1058,7 @@ async def websocket_live(ws: WebSocket):
                 
                 # Send Spot updates for all active symbols
                 spots_data = {}
-                for symbol in ACTIVE_SYMBOLS:
+                for symbol in state.active_symbols:
                     if symbol in _market_cache["spot"]:
                         s_data = _market_cache["spot"][symbol]
                         spots_data[symbol] = {
@@ -1097,7 +1080,7 @@ async def websocket_live(ws: WebSocket):
 
                 # Aggregated Analysis (Signals)
                 all_signals = []
-                for symbol in ACTIVE_SYMBOLS:
+                for symbol in state.active_symbols:
                     if symbol in _market_cache["analysis"]:
                         res = _market_cache["analysis"][symbol]["data"]
                         if res and res.get("signals"):
@@ -1304,5 +1287,7 @@ async def startup_event():
 
 if __name__ == "__main__":
     import uvicorn
-    print("🚀 Starting NIFTY Trading Dashboard on http://localhost:8000")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    import os
+    port = int(os.environ.get("PORT", 8000))
+    print(f"🚀 Starting NIFTY Trading Dashboard on http://localhost:{port}")
+    uvicorn.run(app, host="0.0.0.0", port=port)

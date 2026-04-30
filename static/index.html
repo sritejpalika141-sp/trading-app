@@ -89,7 +89,22 @@
         </div>
       </div>
 
-      <!-- Signals -->
+      <!-- Market Watch -->
+      <div class="card" id="marketWatchCard">
+        <div class="card-header">
+          <span class="card-title">📉 Market Watch</span>
+          <div style="display:flex; gap:8px">
+            <input type="text" id="newScript" placeholder="NSE:SBIN-EQ" style="padding:4px 8px; border-radius:4px; border:1px solid #ccc; font-size:11px; width:100px;">
+            <button class="btn-buy" onclick="addScript()" style="padding:4px 8px; font-size:11px;">Add</button>
+          </div>
+        </div>
+        <div class="card-body" id="scriptList" style="display:flex; flex-wrap:wrap; gap:8px; padding:10px;">
+          <!-- Scripts will be rendered here -->
+          <div class="loading">Loading scrips...</div>
+        </div>
+      </div>
+
+      <!-- Signals Scanning -->
       <div class="card" id="signalsCard" style="flex:1;transition:max-height 0.3s ease;">
         <div class="card-header">
           <span class="card-title" style="display:flex;align-items:center;gap:6px;cursor:pointer" onclick="toggleCard('signalsCard', '1000px')">

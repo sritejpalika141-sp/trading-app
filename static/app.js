@@ -55,12 +55,93 @@ function applyTheme() {
     });
   }
 }
+ // --- SCRIP MANAGEMENT ---
+async function fetchScripts() {
+  try {
+    const res = await fetch('/api/scripts');
+    const data = await res.json();
+    renderScriptsList(data.scripts);
+  } catch (e) {
+    console.error("Failed to fetch scripts:", e);
+  }
+}
 
+function renderScriptsList(scripts) {
+  const container = document.getElementById('scriptList');
+  if (!container) return;
+  
+  if (!scripts || scripts.length === 0) {
+    container.innerHTML = '<div style="font-size:11px;color:var(--text-muted)">No active scrips.</div>';
+    return;
+  }
+  
+  container.innerHTML = scripts.map(s => `
+    <div class="script-tag" style="display:flex; align-items:center; gap:6px; background:rgba(0,102,255,0.1); padding:4px 10px; border-radius:12px; font-size:11px; border:1px solid var(--accent-blue);">
+      <span style="font-weight:600">${s.replace('NSE:', '').replace('-INDEX', '').replace('-EQ', '')}</span>
+      <span onclick="removeScript('${s}')" style="cursor:pointer; color:red; font-weight:bold; font-size:14px; line-height:1">×</span>
+    </div>
+  `).join('');
+}
+
+async function addScript() {
+  const input = document.getElementById('newScript');
+  const symbol = input.value.trim().toUpperCase();
+  if (!symbol) return;
+  
+  showToast(`Adding ${symbol}...`, 'info');
+  try {
+    const res = await fetch('/api/scripts/add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbol })
+    });
+    const data = await res.json();
+    if (data.success) {
+      renderScriptsList(data.scripts);
+      input.value = '';
+      showToast('Scrip added', 'success');
+    } else {
+      showToast('Failed to add: ' + data.message, 'error');
+    }
+  } catch (e) {
+    showToast('Error adding scrip', 'error');
+  }
+}
+
+async function removeScript(symbol) {
+  if (!confirm(`Remove ${symbol}?`)) return;
+  
+  showToast(`Removing ${symbol}...`, 'info');
+  try {
+    const res = await fetch('/api/scripts/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbol })
+    });
+    const data = await res.json();
+    if (data.success) {
+      renderScriptsList(data.scripts);
+      showToast('Scrip removed', 'success');
+    }
+  } catch (e) {
+    showToast('Error removing scrip', 'error');
+  }
+}
+
+// Initialization
 document.addEventListener('DOMContentLoaded', async () => {
   applyTheme();
   loadVisibilityPrefs();
+  fetchScripts();
+  fetchSignalHistory();
   initCharts();
   
+  try {
+    const res = await fetch('/api/user-config');
+    const config = await res.json();
+    if (config.theme) document.body.setAttribute('data-theme', config.theme);
+  } catch(e) {}
+
   try {
     // fetchAnalysis returns candles_5m so no need for separate fetchCandles call
     // (the /api/candles endpoint is rate-limited since analysis already fetches from Fyers)

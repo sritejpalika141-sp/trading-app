@@ -30,6 +30,7 @@ class TradingState:
                         self.pnl_today = data.get("pnl_today", 0.0)
                         self.active_auto_trades = data.get("active_auto_trades", [])
                         self.skipped_signals = data.get("skipped_signals", [])
+                        self.active_symbols = data.get("active_symbols", ["NSE:NIFTY50-INDEX"])
             except:
                 self.reset_day()
         else:
@@ -47,7 +48,8 @@ class TradingState:
                 "max_trades_per_day": self.max_trades_per_day,
                 "max_loss_per_day": self.max_loss_per_day,
                 "active_auto_trades": self.active_auto_trades,
-                "skipped_signals": self.skipped_signals
+                "skipped_signals": self.skipped_signals,
+                "active_symbols": self.active_symbols
             }, f)
 
     def reset_day(self):
@@ -61,6 +63,18 @@ class TradingState:
     def add_skipped_signal(self, sig_id):
         if sig_id not in self.skipped_signals:
             self.skipped_signals.append(sig_id)
+            self.save()
+
+    def add_symbol(self, symbol):
+        if not hasattr(self, 'active_symbols'): self.active_symbols = ["NSE:NIFTY50-INDEX"]
+        if symbol not in self.active_symbols:
+            self.active_symbols.append(symbol)
+            self.save()
+
+    def remove_symbol(self, symbol):
+        if not hasattr(self, 'active_symbols'): self.active_symbols = ["NSE:NIFTY50-INDEX"]
+        if symbol in self.active_symbols:
+            self.active_symbols.remove(symbol)
             self.save()
 
     def can_trade(self, symbol_prefix="NSE:NIFTY"):
