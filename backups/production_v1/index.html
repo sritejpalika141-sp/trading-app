@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NIFTY Options Trading Dashboard</title>
+  <meta name="description" content="Live NIFTY intraday options trading with order blocks, fair value gaps, and key level analysis">
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+
+  <!-- HEADER -->
+  <header class="header" id="header">
+    <div class="header-left">
+      <div class="logo">⚡ NIFTY Trader</div>
+      <div class="spot-display">
+        <span style="color:var(--text-muted);font-size:11px">NIFTY 50</span>
+        <span class="spot-price" id="spotPrice">--</span>
+        <span class="spot-change" id="spotChange">--</span>
+      </div>
+      
+      <!-- AUTOMATION TOGGLE -->
+      <div class="automation-panel">
+        <div class="auto-switch">
+          <label class="switch">
+            <input type="checkbox" id="autoToggle" onchange="toggleAutomation()">
+            <span class="slider round"></span>
+          </label>
+          <span class="auto-label">AUTO</span>
+        </div>
+        <div class="auto-stats">
+          <span id="autoTrades">0/2 Trades</span>
+          <span id="autoPnl">₹0.00</span>
+        </div>
+      </div>
+    </div>
+    <div class="header-right">
+      <button id="loginBtn" class="refresh-btn" style="display:none;background:var(--bearish);border-color:var(--bearish);margin-right:10px" onclick="triggerLogin()">⚠️ Reconnect Fyers</button>
+      <div class="vix-badge">VIX <span id="vixValue">--</span> <span id="vixChange" class="spot-change">--</span></div>
+      <div id="statusBadge"><span class="status-dot disconnected"></span>Connecting...</div>
+      <button class="icon-btn" id="themeToggleBtn" onclick="toggleTheme()" title="Toggle Light/Dark Mode">☀️</button>
+      <button class="refresh-btn" id="refreshBtn" onclick="refreshAll()">⟳ Refresh</button>
+    </div>
+  </header>
+
+  <!-- MAIN GRID -->
+  <div class="main-grid">
+
+    <!-- COMBINED MASTER CHART -->
+    <div class="card" id="masterChartCard" style="grid-column:1;grid-row:1/3;transition:max-height 0.3s ease;">
+      <div class="card-header">
+        <span class="card-title" style="cursor:pointer" onclick="toggleCard('masterChartCard', '800px')">📈 5-Min Master Chart — Key Levels, Order Blocks & FVG</span>
+        <div style="display:flex;align-items:center;gap:12px">
+          <div class="vis-toggles">
+            <label class="vis-label"><input type="checkbox" id="toggleOB" checked onchange="handleVisibilityChange()"> OB</label>
+            <label class="vis-label"><input type="checkbox" id="toggleFVG" checked onchange="handleVisibilityChange()"> FVG</label>
+            <label class="vis-label"><input type="checkbox" id="toggleKEY" checked onchange="handleVisibilityChange()"> KEY</label>
+          </div>
+          <span class="card-badge badge-neutral" id="obCount">0 OB</span>
+          <span class="card-badge badge-neutral" id="trendBadge">NEUTRAL</span>
+          <button class="icon-btn-sm" onclick="toggleCard('masterChartCard', '800px')" title="Minimize/Maximize">
+            <span id="masterChartToggleIcon">▼</span>
+          </button>
+        </div>
+      </div>
+      <div class="card-body" style="position:relative">
+        <div class="chart-container" id="chart5m"></div>
+        <div class="chart-legend" id="legend5m">O: -- H: -- L: -- C: --</div>
+      </div>
+    </div>
+
+    <!-- RIGHT PANEL -->
+    <div class="right-panel">
+      <!-- Key Levels -->
+      <div class="card" id="keyLevelsCard" style="flex:0 0 auto;max-height:44px;transition:max-height 0.3s ease;">
+        <div class="card-header">
+          <span class="card-title" style="cursor:pointer" onclick="toggleCard('keyLevelsCard', '200px')">🔑 Key Levels</span>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="font-size:11px;color:var(--text-muted)" id="levelCount">0</span>
+            <button class="icon-btn-sm" onclick="toggleCard('keyLevelsCard', '200px')">
+              <span id="keyLevelsToggleIcon">▶</span>
+            </button>
+          </div>
+        </div>
+        <div class="card-body" id="keyLevelsContainer" style="display:none">
+          <div class="loading"><div class="spinner"></div>Loading...</div>
+        </div>
+      </div>
+
+      <!-- Signals -->
+      <div class="card" id="signalsCard" style="flex:1;transition:max-height 0.3s ease;">
+        <div class="card-header">
+          <span class="card-title" style="display:flex;align-items:center;gap:6px;cursor:pointer" onclick="toggleCard('signalsCard', '1000px')">
+            🎯 Trade Signals
+            <div class="tooltip-container" onclick="event.stopPropagation()">
+              <span style="cursor:help;opacity:0.6;font-size:14px">ℹ️</span>
+              <div class="tooltip-text">
+                <b>Actionable Trade Requirements:</b><br/>
+                1. Active Order Block (OB) or FVG near spot.<br/>
+                2. Must align with 1H Key Level or Trend.<br/>
+                3. Market time strictly before 14:00 IST.<br/>
+                <i>Note: "WATCHING" signals are advisory only.</i>
+              </div>
+            </div>
+          </span>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="font-size:11px;color:var(--text-muted)" id="signalCount">0</span>
+            <button class="icon-btn-sm" onclick="toggleCard('signalsCard', '1000px')">
+              <span id="signalsToggleIcon">▼</span>
+            </button>
+          </div>
+        </div>
+        <div class="card-body" id="signalsContainer">
+          <div class="no-signal">
+            <div class="no-signal-icon">📡</div>
+            <div class="no-signal-text">Scanning for setups...</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Strike Recommendations -->
+      <div class="card" id="strikesCard" style="flex:0 0 auto;max-height:44px;transition:max-height 0.3s ease;">
+        <div class="card-header">
+          <span class="card-title" style="cursor:pointer" onclick="toggleCard('strikesCard', '180px')">💎 Strike Selection</span>
+          <button class="icon-btn-sm" onclick="toggleCard('strikesCard', '180px')">
+            <span id="strikesToggleIcon">▶</span>
+          </button>
+        </div>
+        <div class="card-body" id="strikesContainer" style="display:none">
+          <div class="no-signal"><div class="no-signal-text">Waiting for signal...</div></div>
+        </div>
+      </div>
+      <!-- Signal History -->
+      <div class="card" id="historyCard" style="flex:0 0 auto;max-height:44px; transition: max-height 0.3s ease;">
+        <div class="card-header">
+          <span class="card-title" style="cursor:pointer" onclick="toggleHistory()">📜 Signal History</span>
+          <button class="icon-btn-sm" onclick="toggleHistory()">
+            <span id="historyToggleIcon">▶</span>
+          </button>
+        </div>
+        <div class="card-body" id="historyContainer" style="display:none;">
+          <div class="loading"><div class="spinner"></div>Loading...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- BOTTOM BAR -->
+    <div class="bottom-bar">
+      <!-- Positions -->
+      <div class="card" id="positionsCard" style="transition:max-height 0.3s ease;max-height:44px">
+        <div class="card-header">
+          <span class="card-title" style="cursor:pointer" onclick="toggleCard('positionsCard', '500px')">💼 Positions</span>
+          <button class="icon-btn-sm" onclick="toggleCard('positionsCard', '500px')">
+            <span id="positionsToggleIcon">▶</span>
+          </button>
+        </div>
+        <div class="card-body" id="positionsContainer" style="display:none">
+          <div class="no-signal"><div class="no-signal-text">No open positions</div></div>
+        </div>
+      </div>
+
+      <!-- Orders -->
+      <div class="card" id="ordersCard" style="transition:max-height 0.3s ease;max-height:44px">
+        <div class="card-header">
+          <span class="card-title" style="cursor:pointer" onclick="toggleCard('ordersCard', '500px')">📋 Orders</span>
+          <button class="icon-btn-sm" onclick="toggleCard('ordersCard', '500px')">
+            <span id="ordersToggleIcon">▶</span>
+          </button>
+        </div>
+        <div class="card-body" id="ordersContainer" style="display:none">
+          <div class="no-signal"><div class="no-signal-text">No orders today</div></div>
+        </div>
+      </div>
+
+      <!-- Funds -->
+      <div class="card" id="fundsCard" style="transition:max-height 0.3s ease;max-height:44px">
+        <div class="card-header">
+          <div style="display:flex;align-items:center;gap:10px;cursor:pointer" onclick="toggleCard('fundsCard', '100px')">
+            <span class="card-title">💰 Account</span>
+            <span id="headerPnl" style="font-size:12px;font-weight:700;color:var(--accent-cyan);display:inline-block;font-family:'JetBrains Mono',monospace">P&L: --</span>
+          </div>
+          <button class="icon-btn-sm" onclick="toggleCard('fundsCard', '100px')">
+            <span id="fundsToggleIcon">▶</span>
+          </button>
+        </div>
+        <div class="card-body" id="fundsContainer" style="display:none; flex-direction:row; align-items:center; justify-content:space-around; overflow:hidden">
+          <div class="fund-stat" style="padding:8px">
+            <span class="fund-label">Available</span>
+            <span class="fund-value" id="fundAvailable" style="font-size:13px">--</span>
+          </div>
+          <div class="fund-stat" style="padding:8px">
+            <span class="fund-label">Used</span>
+            <span class="fund-value" id="fundUsed" style="font-size:13px">--</span>
+          </div>
+          <div class="fund-stat" style="padding:8px">
+            <span class="fund-label">Today P&L</span>
+            <span class="fund-value" id="totalPnl" style="font-size:13px">--</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ORDER MODAL -->
+  <div class="modal-overlay hidden" id="orderModal">
+    <div class="modal">
+      <h3 id="modalTitle">Place Order</h3>
+      <div class="modal-field">
+        <label>Symbol</label>
+        <input type="text" id="modalSymbol" readonly>
+      </div>
+      <div class="modal-field">
+        <label>Quantity</label>
+        <input type="number" id="modalQty" value="65" step="65">
+      </div>
+      <div class="modal-field">
+        <label>Side</label>
+        <select id="modalSide"><option value="BUY">BUY</option><option value="SELL">SELL</option></select>
+      </div>
+      <div class="modal-field">
+        <label>Order Type</label>
+        <select id="modalOrderType"><option value="MARKET">MARKET</option><option value="LIMIT">LIMIT</option></select>
+      </div>
+      <div class="modal-field">
+        <label>Product</label>
+        <select id="modalProduct"><option value="MARGIN">MARGIN (F&O)</option><option value="INTRADAY">INTRADAY</option></select>
+      </div>
+      <div class="modal-field">
+        <label>Stop Loss (Pts)</label>
+        <input type="number" id="modalSLPoints" value="12" step="1" min="0" oninput="document.getElementById('modalTargetPoints').value = this.value * 2">
+      </div>
+      <div class="modal-field">
+        <label>Target (Pts)</label>
+        <input type="number" id="modalTargetPoints" value="24" step="1" min="0" placeholder="0 = No Target">
+      </div>
+      <div class="modal-actions">
+        <button class="btn-cancel" onclick="closeModal()">Cancel</button>
+        <button class="btn-confirm" onclick="confirmOrder()">Confirm Order</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- TOAST -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

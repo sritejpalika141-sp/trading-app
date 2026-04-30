@@ -1,0 +1,15 @@
+# Logs
+*.log
+logs/
+__pycache__/
+
+# Packages
+.venv/
+env/
+venv/
+
+# Zip files
+*.zip
+
+# OS files
+.DS_Store
