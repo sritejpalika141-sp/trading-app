@@ -37,14 +37,27 @@ VERSION = "2.1.1"
 state = TradingState()
 
 # Performance-optimized Global Caches
+# --- CONFIGURATION ---
+ACTIVE_SYMBOLS = [
+    "NSE:NIFTY50-INDEX", 
+    "NSE:NIFTYBANK-INDEX", 
+    "NSE:MIDCPNIFTY-INDEX",
+    "NSE:FINNIFTY-INDEX",
+    "NSE:RELIANCE-EQ",
+    "NSE:HDFCBANK-EQ",
+    "NSE:ICICIBANK-EQ",
+    "NSE:TCS-EQ"
+]
+
 _analysis_cache = {
-    "data": None,
+    "data": {"signals": [], "strike_recommendations": [], "key_levels": []},
     "timestamp": 0
 }
 
 _market_cache = {
-    "spot": None,
+    "spot": {},        # Will store { symbol: quote_data }
     "vix": None,
+    "analysis": {},    # Will store { symbol: analysis_result }
     "positions": [],
     "active_positions": [],
     "total_pnl": 0.0,
@@ -52,9 +65,7 @@ _market_cache = {
     "unrealized_pnl": 0.0,
     "orders": [],
     "funds": None,
-    "ce_strikes": [],
-    "pe_strikes": [],
-    "expiry": None,
+    "strikes": {},     # Will store { symbol: { "ce": [], "pe": [], "expiry": None } }
     "last_update": 0
 }
 
@@ -86,10 +97,13 @@ def on_data_message(msg):
     # Fyers v3 can use 'lp' or 'ltp' depending on the mode
     price = msg.get("lp") or msg.get("ltp") or 0
     if price == 0: return
-
+    
     updated = False
-    if symbol == "NSE:NIFTY50-INDEX":
-        _market_cache["spot"] = {
+    if symbol == "NSE:INDIAVIX-INDEX":
+        _market_cache["vix"] = { "lp": price, "ch": msg.get("ch", 0), "chp": msg.get("chp", 0) }
+        updated = True
+    elif symbol in ACTIVE_SYMBOLS:
+        _market_cache["spot"][symbol] = {
             "lp": price,
             "ch": msg.get("ch", 0),
             "chp": msg.get("chp", 0),
@@ -99,19 +113,15 @@ def on_data_message(msg):
             "prev_close_price": msg.get("prev_close_price", 0)
         }
         updated = True
-    elif symbol == "NSE:INDIAVIX-INDEX":
-        _market_cache["vix"] = {
-            "lp": price,
-            "chp": msg.get("chp", 0)
-        }
-        updated = True
-    else:
-        # Check monitored strikes
-        for key in ["ce_strikes", "pe_strikes"]:
-            for s in _market_cache.get(key, []):
-                if s.get("symbol") == symbol:
-                    s["ltp"] = price
-                    updated = True
+        
+    # Also update strikes if we have them cached
+    if symbol.endswith("CE") or symbol.endswith("PE"):
+        for base in _market_cache["strikes"]:
+            for side in ["ce", "pe"]:
+                for s in _market_cache["strikes"][base].get(side, []):
+                    if s.get("symbol") == symbol:
+                        s["ltp"] = price
+                        updated = True
 
     if updated:
         from datetime import datetime
@@ -170,11 +180,12 @@ def on_data_open(sync_only=False):
     if not sync_only:
         print("📡 Data Socket Opened.")
     if data_socket_instance:
-        symbols = ["NSE:NIFTY50-INDEX", "NSE:INDIAVIX-INDEX"]
+        symbols = ACTIVE_SYMBOLS + ["NSE:INDIAVIX-INDEX"]
         # Subscribe to any already recommended strikes
-        for key in ["ce_strikes", "pe_strikes"]:
-            for s in _market_cache.get(key, []):
-                if s.get("symbol"): symbols.append(s["symbol"])
+        for base in _market_cache.get("strikes", {}):
+            for key in ["ce", "pe"]:
+                for s in _market_cache["strikes"][base].get(key, []):
+                    if s.get("symbol"): symbols.append(s["symbol"])
         
         data_socket_instance.subscribe(symbols=list(set(symbols)), data_type="SymbolUpdate")
         if main_loop and not sync_only:
@@ -230,7 +241,7 @@ async def get_status():
     return {
         "authenticated": authenticated,
         "timestamp": datetime.now().isoformat(),
-        "market_open": _is_market_open(),
+        "market_open": True,
     }
 
 
@@ -239,26 +250,12 @@ async def get_status():
 async def get_spot():
     """Get live NIFTY spot price and VIX."""
     client = get_client()
-    quotes = client.get_quotes(["NSE:NIFTY50-INDEX", "NSE:INDIAVIX-INDEX"])
+    quotes = client.get_quotes(ACTIVE_SYMBOLS + ["NSE:INDIAVIX-INDEX"])
 
-    nifty = quotes.get("NSE:NIFTY50-INDEX", {})
-    vix = quotes.get("NSE:INDIAVIX-INDEX", {})
-
-    if not nifty:
-        raise HTTPException(500, "Could not fetch NIFTY data")
-
-    return {
-        "spot": nifty.get("lp", 0),
-        "open": nifty.get("open_price", 0),
-        "high": nifty.get("high_price", 0),
-        "low": nifty.get("low_price", 0),
-        "prev_close": nifty.get("prev_close_price", 0),
-        "change": nifty.get("ch", 0),
-        "change_pct": nifty.get("chp", 0),
-        "vix": vix.get("lp", 0),
-        "vix_change": vix.get("chp", 0),
-        "timestamp": datetime.now().isoformat(),
-    }
+    # Transform for compatibility
+    res = {symbol: quotes.get(symbol, {}) for symbol in ACTIVE_SYMBOLS}
+    res["vix"] = quotes.get("NSE:INDIAVIX-INDEX", {})
+    return res
 
 
 @app.get("/api/candles/{resolution}")
@@ -315,17 +312,6 @@ async def auth_status():
         return {"authenticated": False}
 
 
-@app.get("/api/analysis")
-async def get_analysis():
-    """Run full analysis: key levels, OBs, FVGs, signals."""
-    global _analysis_cache
-    now = datetime.now()
-    now_ts = now.timestamp()
-    
-    # Verify cache date - discard if from a different day
-    if _analysis_cache["data"]:
-        cache_time = datetime.fromtimestamp(_analysis_cache["timestamp"])
-        if cache_time.date() != now.date():
             print("🧹 Discarding stale analysis cache from a different day.")
             _analysis_cache["data"] = None
 
@@ -443,12 +429,20 @@ async def get_analysis():
         if result["signals"]:
             filtered_signals = []
             for sig in result["signals"]:
+                # Attach the symbol to the signal for the UI
+                sig["symbol"] = symbol
                 # Round bottom to 2 decimal places to be robust against float precision issues
                 bottom = round(sig.get('entry_zone_bottom', 0), 2)
                 sig_id = f"{sig.get('type')}_{sig.get('reason')}_{bottom}"
                 if sig_id not in state.skipped_signals:
                     filtered_signals.append(sig)
             result["signals"] = filtered_signals
+        
+        # Store in per-symbol cache
+        _market_cache["analysis"][symbol] = {
+            "data": result,
+            "timestamp": now_ts
+        }
         
         # === SIGNAL LOCK LOGIC ===
         global _signal_lock
@@ -876,27 +870,27 @@ async def market_data_worker():
             # 1. Quotes (Fallback Polling if WebSocket is stale > 10s)
             is_stale = (datetime.now().timestamp() - _market_cache.get("last_update", 0)) > 10
             if is_stale:
-                base_symbols = ["NSE:NIFTY50-INDEX", "NSE:INDIAVIX-INDEX"]
-                for s_list in [_market_cache.get("ce_strikes", []), _market_cache.get("pe_strikes", [])]:
-                    for s in s_list:
-                        if s.get("symbol"): base_symbols.append(s.get("symbol"))
+                base_symbols = ACTIVE_SYMBOLS + ["NSE:INDIAVIX-INDEX"]
+                for base in _market_cache.get("strikes", {}):
+                    for side in ["ce", "pe"]:
+                        for s in _market_cache["strikes"][base].get(side, []):
+                            if s.get("symbol"): base_symbols.append(s.get("symbol"))
                 task_defs["quotes"] = asyncio.to_thread(client.get_quotes, list(set(base_symbols)))
             
-            # Sync WebSocket subscriptions every 15s to catch new strikes
-            if tick % 10 == 0 and data_socket_instance:
-                try:
-                    on_data_open(sync_only=True) # Re-runs subscription logic
-                except: pass
-
-            # 2. Sync Core Data (Funds, Positions, Orders) - Every 3s with internal caching
+            # 2. Sync Core Data (Funds, Positions, Orders) - Every 6s
             if tick % 2 == 0:
                 task_defs["synced"] = asyncio.to_thread(client.get_synced_data)
 
-            # 4. Analysis (every 30s)
-            if tick % 20 == 0:
-                task_defs["analysis"] = get_analysis()
+            # 3. Analysis (every 30s) for all active symbols
+            if tick % 10 == 0:
+                for symbol in ACTIVE_SYMBOLS:
+                    task_defs[f"analysis_{symbol}"] = get_analysis(symbol)
 
-            # 5. Options Chain Refresh (every 20s)
+            # 3. Option Chain Refresh (every 40s) for indices
+            if tick % 15 == 0:
+                for symbol in ACTIVE_SYMBOLS:
+                    if "INDEX" in symbol:
+                        task_defs[f"chain_{symbol}"] = None # Handled below manually to stay safe
             if tick % 15 == 0:
                 task_defs["chain"] = None # Handled below
 
@@ -926,23 +920,24 @@ async def market_data_worker():
                 else:
                     await broadcast_log(f"❌ Fyers API Error: {msg}", "error")
             else:
-                nifty = quotes.get("NSE:NIFTY50-INDEX", {})
-                vix_data = quotes.get("NSE:INDIAVIX-INDEX", {})
+                for symbol in ACTIVE_SYMBOLS:
+                    if symbol in quotes:
+                        _market_cache["spot"][symbol] = quotes[symbol]
                 
-                if nifty and nifty.get("lp", 0) > 0:
-                    _market_cache["spot"] = nifty
-                    _market_cache["vix"] = vix_data
-                    _market_cache["last_update"] = datetime.now().timestamp()
-                    
-                    # Update LTPs in strike cache
-                    for key in ["ce_strikes", "pe_strikes"]:
-                        if _market_cache.get(key):
-                            for s in _market_cache[key]:
-                                sym = s.get("symbol")
-                                if sym in quotes:
-                                    s["ltp"] = quotes[sym].get("lp", s["ltp"])
-                                    s["bid"] = quotes[sym].get("bid", s["bid"])
-                                    s["ask"] = quotes[sym].get("ask", s["ask"])
+                if "NSE:INDIAVIX-INDEX" in quotes:
+                    _market_cache["vix"] = quotes["NSE:INDIAVIX-INDEX"]
+                
+                _market_cache["last_update"] = datetime.now().timestamp()
+                
+                # Update LTPs in strike cache
+                for base in _market_cache["strikes"]:
+                    for side in ["ce", "pe"]:
+                        for s in _market_cache["strikes"][base].get(side, []):
+                            sym = s.get("symbol")
+                            if sym in quotes:
+                                s["ltp"] = quotes[sym].get("lp", s["ltp"])
+                                s["bid"] = quotes[sym].get("bid", s["bid"])
+                                s["ask"] = quotes[sym].get("ask", s["ask"])
 
             synced_data = results.get("synced") or {}
             
@@ -993,24 +988,28 @@ async def market_data_worker():
 
             # --- OPTION CHAIN SEQUENTIAL REFRESH (to avoid more 429) ---
             if tick % 15 == 0:
-                cached_spot = _market_cache.get("spot")
-                spot = (cached_spot or {}).get("lp", 0)
-                if spot > 0:
-                    try:
-                        expiry = await asyncio.to_thread(client.find_nearest_expiry, spot)
-                        if expiry:
-                            chain = await asyncio.to_thread(client.get_option_chain_strikes, spot, expiry["code"], 8)
-                            dte = 5
-                            try:
-                                exp_date = datetime.strptime(expiry["date"], "%Y-%m-%d").date()
-                                dte = (exp_date - datetime.now().date()).days
-                            except: pass
-                            
-                            _market_cache["ce_strikes"] = get_strike_recommendations(chain, "CALL", spot, dte=dte)
-                            _market_cache["pe_strikes"] = get_strike_recommendations(chain, "PUT", spot, dte=dte)
-                            _market_cache["expiry"] = expiry
-                    except Exception as e:
-                        print(f"⚠️ Chain refresh failed: {e}")
+                for symbol in ACTIVE_SYMBOLS:
+                    if "INDEX" not in symbol: continue
+                    cached_spot = _market_cache["spot"].get(symbol)
+                    spot = (cached_spot or {}).get("lp", 0)
+                    if spot > 0:
+                        try:
+                            expiry = await asyncio.to_thread(client.find_nearest_expiry, spot)
+                            if expiry:
+                                chain = await asyncio.to_thread(client.get_option_chain_strikes, spot, expiry["code"], 8)
+                                dte = 5
+                                try:
+                                    exp_date = datetime.strptime(expiry["date"], "%Y-%m-%d").date()
+                                    dte = (exp_date - datetime.now().date()).days
+                                except: pass
+                                
+                                if symbol not in _market_cache["strikes"]: _market_cache["strikes"][symbol] = {}
+                                _market_cache["strikes"][symbol]["ce"] = get_strike_recommendations(chain, "CALL", spot, dte=dte)
+                                _market_cache["strikes"][symbol]["pe"] = get_strike_recommendations(chain, "PUT", spot, dte=dte)
+                                _market_cache["strikes"][symbol]["expiry"] = expiry
+                                await asyncio.sleep(1) # Small gap between symbols
+                        except Exception as e:
+                            print(f"⚠️ Chain refresh failed for {symbol}: {e}")
 
             # --- HARD INTRADAY EXIT (15:15 IST) ---
             try:
@@ -1074,22 +1073,44 @@ async def websocket_live(ws: WebSocket):
             if _market_cache["last_update"] > last_spot_update:
                 last_spot_update = _market_cache["last_update"]
                 
-                # Send Spot update
-                if _market_cache["spot"]:
-                    nifty = _market_cache["spot"]
-                    vix = _market_cache["vix"] or {}
+                # Send Spot updates for all active symbols
+                spots_data = {}
+                for symbol in ACTIVE_SYMBOLS:
+                    if symbol in _market_cache["spot"]:
+                        s_data = _market_cache["spot"][symbol]
+                        spots_data[symbol] = {
+                            "lp": s_data.get("lp", 0),
+                            "change": s_data.get("ch", 0),
+                            "change_pct": s_data.get("chp", 0),
+                        }
+                
+                vix = _market_cache["vix"] or {}
+                await ws.send_json({
+                    "type": "market_update",
+                    "spots": spots_data,
+                    "vix": {
+                        "lp": vix.get("lp", 0),
+                        "change": vix.get("chp", 0),
+                    },
+                    "timestamp": datetime.now().isoformat(),
+                })
+
+                # Aggregated Analysis (Signals)
+                all_signals = []
+                for symbol in ACTIVE_SYMBOLS:
+                    if symbol in _market_cache["analysis"]:
+                        res = _market_cache["analysis"][symbol]["data"]
+                        if res and res.get("signals"):
+                            all_signals.extend(res["signals"])
+                
+                if all_signals:
                     await ws.send_json({
-                        "type": "spot",
-                        "spot": nifty.get("lp", 0),
-                        "open": nifty.get("open_price", 0),
-                        "high": nifty.get("high_price", 0),
-                        "low": nifty.get("low_price", 0),
-                        "prev_close": nifty.get("prev_close_price", 0),
-                        "change": nifty.get("ch", 0),
-                        "change_pct": nifty.get("chp", 0),
-                        "vix": vix.get("lp", 0),
-                        "vix_change": vix.get("chp", 0),
-                        "timestamp": datetime.now().isoformat(),
+                        "type": "analysis",
+                        "analysis": {
+                            "signals": all_signals,
+                            # We send the strike recommendations for the first signal found
+                            "strike_recommendations": _market_cache["analysis"][all_signals[0]["symbol"]]["data"].get("strike_recommendations", [])
+                        }
                     })
 
                 # Send Positions and Stats

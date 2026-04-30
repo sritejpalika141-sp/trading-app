@@ -343,6 +343,17 @@ function connectWebSocket() {
         renderSignals(analysisData.signals);
         renderStrikes(analysisData.strike_recommendations);
         break;
+      case 'market_update':
+        // Update Nifty as primary spot in header
+        if (data.spots["NSE:NIFTY50-INDEX"]) {
+            updateSpotLive({
+                lp: data.spots["NSE:NIFTY50-INDEX"].lp,
+                chp: data.spots["NSE:NIFTY50-INDEX"].change_pct,
+                vix: data.vix.lp,
+                vix_change: data.vix.change
+            });
+        }
+        break;
     }
   };
 
@@ -1030,10 +1041,11 @@ function renderSignals(signals) {
     return `<div class="signal-card">
       <div class="signal-header">
         <span class="signal-type ${isCall ? 'call' : 'put'}">
-          ${isCall ? '⬆️' : '⬇️'} ${sig.type} BUY
+          ${isCall ? '⬆️' : '⬇️'} ${sig.symbol?.replace('NSE:', '') || 'NIFTY'} ${sig.type} BUY
         </span>
         <span class="confidence-badge ${confClass}">${sig.confidence}%</span>
       </div>
+      <div class="signal-reason" style="font-weight:600; color:var(--accent-blue); margin-bottom:4px">${sig.symbol?.replace('-INDEX', '').replace('-EQ', '') || ''}</div>
       <div class="signal-reason">${sig.reason}</div>
       ${strikeInfo}
       ${priceInfo}
