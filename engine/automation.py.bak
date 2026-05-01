@@ -14,8 +14,6 @@ class TradingState:
         self.last_reset_date = datetime.now().date().isoformat()
         self.active_auto_trades = []
         self.skipped_signals = [] # List of sig_id strings
-        self.active_symbols = ["NSE:NIFTY50-INDEX"]
-        self.hard_exit_triggered = False
         self.load()
 
     def load(self):
@@ -59,9 +57,6 @@ class TradingState:
         self.pnl_today = 0.0
         self.active_auto_trades = []
         self.skipped_signals = []
-        self.hard_exit_triggered = False
-        if not hasattr(self, 'active_symbols') or not self.active_symbols:
-            self.active_symbols = ["NSE:NIFTY50-INDEX"]
         self.last_reset_date = datetime.now().date().isoformat()
         self.save()
 

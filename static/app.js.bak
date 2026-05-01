@@ -112,27 +112,24 @@ function renderScriptsList(liveData = null) {
     const lp = d.lp || 0;
     const ch = d.change || 0;
     const chp = d.change_pct || 0;
-    const isUp = ch >= 0;
-    const color = isUp ? 'var(--bullish)' : 'var(--bearish)';
-    const sign = isUp ? '+' : '';
+    const color = ch >= 0 ? 'var(--pnl-positive)' : 'var(--pnl-negative)';
+    const sign = ch >= 0 ? '+' : '';
     const isSelected = s === activeSymbol;
-    const trendClass = lp > 0 ? (isUp ? 'up' : 'down') : 'flat';
+    const bg = isSelected ? 'rgba(0,102,255,0.1)' : 'transparent';
+    const border = isSelected ? '1px solid var(--accent-blue)' : '1px solid transparent';
     
     return `
-      <tr class="mw-row ${isSelected ? 'selected' : ''}" onclick="selectScript('${s}')">
-        <td style="padding:8px 12px; font-weight:500; font-size:12px;"><span class="mw-trend-dot ${trendClass}"></span>${s.replace('NSE:', '')}</td>
-        <td style="padding:8px 12px; text-align:right; font-weight:500; color:${color}; font-size:12px; font-family:'JetBrains Mono',monospace;">${lp > 0 ? lp.toFixed(2) : '--'}</td>
-        <td style="padding:8px 12px; text-align:right; color:${color}; font-size:11px; font-family:'JetBrains Mono',monospace;">${lp > 0 ? sign + ch.toFixed(2) : '--'}</td>
-        <td style="padding:8px 12px; text-align:right; color:${color}; font-size:11px; font-family:'JetBrains Mono',monospace;">${lp > 0 ? sign + chp.toFixed(2) + '%' : '--'}</td>
+      <tr onclick="selectScript('${s}')" style="border-bottom: 1px solid rgba(0,0,0,0.05); cursor:pointer; background:${bg}; transition: background 0.2s;">
+        <td style="padding:8px 12px; font-weight:400; color:var(--text-main); font-size:13px;">${s.replace('NSE:', '')}</td>
+        <td style="padding:8px 12px; text-align:right; font-weight:400; color:${color}; font-size:13px;">${lp > 0 ? lp.toFixed(2) : '--'}</td>
+        <td style="padding:8px 12px; text-align:right; color:${color}; font-size:13px;">${lp > 0 ? sign + ch.toFixed(2) : '--'}</td>
+        <td style="padding:8px 12px; text-align:right; color:${color}; font-size:13px;">${lp > 0 ? sign + chp.toFixed(2) + '%' : '--'}</td>
         <td style="padding:8px 12px; text-align:center;" onclick="event.stopPropagation()">
-          <span onclick="removeScript('${s}')" style="cursor:pointer; color:#666; font-size:13px; opacity:0.6; transition:opacity 0.2s;" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=0.6">×</span>
+          <span onclick="removeScript('${s}')" style="cursor:pointer; color:#999; font-size:14px;">🗑️</span>
         </td>
       </tr>
     `;
   }).join('');
-  
-  // Also update symbol tabs
-  renderSymbolTabs();
 }
 
 async function addScript() {
@@ -222,13 +219,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   setInterval(fetchAutomationStatus, 15000); // Fast update for automation stats
   
   fetchSignalHistory();
-  setInterval(fetchSignalHistory, 20000);
+  setInterval(fetchSignalHistory, 20000); // Refresh history list
 
   fetchFunds();
-  setInterval(fetchFunds, 60000);
+  setInterval(fetchFunds, 60000); // Refresh account funds & P&L
 
-  // Fetch version info
-  fetchVersion();
+  initWebSocket();
 });
 
 async function fetchAutomationStatus() {
@@ -268,27 +264,19 @@ async function checkAuthStatus() {
   } catch (e) {}
 }
 
-function updateAuthUI(authState) {
+function updateAuthUI(state) {
   const btn = document.getElementById('loginBtn');
-  const connDot = document.getElementById('connDot');
-  const connText = document.getElementById('connText');
-  const footerConn = document.getElementById('footerConn');
+  const statusBadge = document.getElementById('statusBadge');
   
-  if (authState === 'connecting') {
+  if (state === 'connecting') {
     btn.style.display = 'none';
-    if (connDot) { connDot.className = 'conn-dot degraded'; }
-    if (connText) { connText.textContent = 'Connecting...'; }
-    if (footerConn) { footerConn.textContent = 'WebSocket: Connecting'; }
-  } else if (authState === false) {
+    statusBadge.innerHTML = `<span class="status-dot" style="background:#f59e0b; animation: pulse 1.5s infinite"></span>Fyers Connecting...`;
+  } else if (state === false) {
     btn.style.display = 'block';
-    if (connDot) { connDot.className = 'conn-dot disconnected'; }
-    if (connText) { connText.textContent = 'Disconnected'; }
-    if (footerConn) { footerConn.textContent = 'WebSocket: Disconnected'; }
-  } else if (authState === true) {
+    statusBadge.innerHTML = `<span class="status-dot" style="background:#ef4444"></span>Fyers Disconnected`;
+  } else if (state === true) {
     btn.style.display = 'none';
-    if (connDot) { connDot.className = 'conn-dot excellent'; }
-    if (connText) { connText.textContent = 'Live'; }
-    if (footerConn) { footerConn.textContent = 'WebSocket: Connected'; }
+    statusBadge.innerHTML = `<span class="status-dot connected"></span>Fyers Connected`;
   }
 }
 
@@ -1208,7 +1196,7 @@ function renderSignals(signals) {
     }
 
     // Actionable signal with BUY button
-    return `<div class="signal-card ${isCall ? 'call' : 'put'} ${sig.confidence >= 80 ? 'high-conf' : ''}">
+    return `<div class="signal-card">
       <div class="signal-header">
         <span class="signal-type ${isCall ? 'call' : 'put'}">
           ${isCall ? '⬆️' : '⬇️'} ${sig.symbol?.replace('NSE:', '') || 'NIFTY'} ${sig.type} BUY
@@ -1219,7 +1207,6 @@ function renderSignals(signals) {
       <div class="signal-reason">${sig.reason}</div>
       ${strikeInfo}
       ${priceInfo}
-      <div class="confidence-meter"><div class="confidence-fill ${sig.confidence >= 70 ? 'high' : sig.confidence >= 50 ? 'medium' : 'low'}" style="width:${sig.confidence}%"></div></div>
       <div class="signal-zone" style="margin-top:8px">Spot: ${currentSpot} · Zone: ${sig.entry_zone_bottom?.toFixed(2) || '--'} — ${sig.entry_zone_top?.toFixed(2) || '--'}</div>
       <div class="signal-actions">
         <button class="btn-buy" onclick="openOrderFromSignal(${i})">🟢 BUY</button>
@@ -1601,57 +1588,5 @@ function appendActivityLog(msg, level = 'info', time = null) {
   } else if (statusEl && level === 'error') {
     statusEl.textContent = 'ERROR DETECTED';
     statusEl.style.color = 'var(--bearish)';
-  }
-}
-
-// ===== BETA v3 ADDITIONS =====
-
-function renderSymbolTabs() {
-  const container = document.getElementById('symbolTabs');
-  if (!container || !activeScripts || activeScripts.length === 0) return;
-  
-  container.innerHTML = activeScripts.map(s => {
-    const label = s.replace('NSE:', '').replace('-INDEX', '').replace('-EQ', '');
-    const isActive = s === activeSymbol;
-    return `<div class="symbol-tab ${isActive ? 'active' : ''}" onclick="selectScript('${s}')">${label}</div>`;
-  }).join('');
-}
-
-// Price flash animation on spot price change
-let lastSpotPrice = 0;
-const originalUpdateSpotLive = updateSpotLive;
-updateSpotLive = function(data) {
-  const spot = data.spot || data.lp || 0;
-  const spotEl = document.getElementById('spotPrice');
-  
-  if (spotEl && lastSpotPrice > 0 && spot !== lastSpotPrice) {
-    spotEl.classList.remove('price-flash-up', 'price-flash-down');
-    void spotEl.offsetWidth; // Force reflow
-    spotEl.classList.add(spot > lastSpotPrice ? 'price-flash-up' : 'price-flash-down');
-  }
-  lastSpotPrice = spot;
-  
-  originalUpdateSpotLive(data);
-  
-  // Update footer timestamp
-  const footerUpdate = document.getElementById('footerLastUpdate');
-  if (footerUpdate) {
-    footerUpdate.textContent = 'Last: ' + new Date().toLocaleTimeString([], { hour12: false });
-  }
-};
-
-async function fetchVersion() {
-  try {
-    const resp = await fetch('/api/version');
-    const data = await resp.json();
-    const badge = document.getElementById('versionBadge');
-    const footer = document.getElementById('footerVersion');
-    if (badge) badge.textContent = data.version || 'v3.0';
-    if (footer) footer.textContent = `${data.name || 'Sritej Trading'} ${data.version || ''}`;
-    
-    const footerSymbols = document.getElementById('footerSymbols');
-    if (footerSymbols) footerSymbols.textContent = `${data.active_symbols || 1} symbol${data.active_symbols !== 1 ? 's' : ''}`;
-  } catch (e) {
-    console.log('Version fetch failed:', e);
   }
 }

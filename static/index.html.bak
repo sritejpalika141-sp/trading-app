@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>NIFTY Options Trading Dashboard</title>
   <meta name="description" content="Live NIFTY intraday options trading with order blocks, fair value gaps, and key level analysis">
-  <link rel="stylesheet" href="/static/styles.css?v=30">
+  <link rel="stylesheet" href="/static/styles.css?v=9">
   <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
@@ -13,7 +13,7 @@
   <!-- HEADER -->
   <header class="header" id="header">
     <div class="header-left">
-      <div class="logo">⚡ NIFTY Trader <span class="version-badge" id="versionBadge">v3.0</span></div>
+      <div class="logo">⚡ NIFTY Trader</div>
       <div class="spot-display">
         <span id="spotLabel" style="color:var(--text-muted);font-size:11px">NIFTY 50</span>
         <span class="spot-price" id="spotPrice">--</span>
@@ -38,7 +38,7 @@
     <div class="header-right">
       <button id="loginBtn" class="refresh-btn" style="display:none;background:var(--bearish);border-color:var(--bearish);margin-right:10px" onclick="triggerLogin()">⚠️ Reconnect Fyers</button>
       <div class="vix-badge">VIX <span id="vixValue">--</span> <span id="vixChange" class="spot-change">--</span></div>
-      <div class="conn-quality" id="statusBadge"><span class="conn-dot disconnected" id="connDot"></span><span id="connText">Connecting</span></div>
+      <div id="statusBadge"><span class="status-dot disconnected"></span>Fyers Connecting</div>
       <button class="icon-btn" id="themeToggleBtn" onclick="toggleTheme()" title="Toggle Light/Dark Mode">☀️</button>
       <button class="refresh-btn" id="testSignalBtn" style="background:var(--accent-purple);border-color:var(--accent-purple);margin-right:8px" onclick="runSystemCheck()">🧪 System Check</button>
       <button class="refresh-btn" id="refreshBtn" onclick="refreshAll()">⟳ Refresh</button>
@@ -66,7 +66,6 @@
         </div>
       </div>
       <div class="card-body" style="position:relative">
-        <div class="symbol-tabs" id="symbolTabs"></div>
         <div class="chart-container" id="chart5m"></div>
         <div class="chart-legend" id="legend5m">O: -- H: -- L: -- C: --</div>
       </div>
@@ -315,19 +314,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=30"></script>
-  <!-- FOOTER -->
-  <div class="dashboard-footer">
-    <div class="footer-left">
-      <span id="footerVersion">Sritej Trading v3.0.0-beta</span>
-      <span>·</span>
-      <span id="footerSymbols">1 symbol</span>
-    </div>
-    <div class="footer-right">
-      <span id="footerLastUpdate">Last update: --</span>
-      <span>·</span>
-      <span id="footerConn">WebSocket: --</span>
-    </div>
-  </div>
+  <script src="/static/app.js?v=9"></script>
 </body>
 </html>
