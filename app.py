@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 
 from fyers_client import get_client
 from engine.signals import generate_signals
+from engine.ai_engine import ai_engine
 from engine.strikes import select_strike, get_strike_recommendations
 from engine.logger import log_signal, log_trade, get_signal_history
 from engine.automation import TradingState
@@ -402,6 +403,18 @@ async def get_analysis(symbol="NSE:NIFTY50-INDEX"):
             except:
                 expiry = None
         result["expiry"] = expiry
+        
+        # Option Chain Analysis for AI
+        if expiry:
+            try:
+                # Fetch 5 strikes on each side of ATM for OI analysis
+                oc_data = await asyncio.to_thread(client.get_option_chain_strikes, spot, expiry["code"], 5)
+                result["option_chain"] = oc_data
+            except Exception as e:
+                logger.error(f"Option Chain Fetch Error: {e}")
+                result["option_chain"] = None
+        else:
+            result["option_chain"] = None
 
         # Filter OBs and FVGs strictly near Key Levels
         filtered_obs = []
@@ -429,6 +442,48 @@ async def get_analysis(symbol="NSE:NIFTY50-INDEX"):
         result["active_order_blocks"] = [ob for ob in filtered_obs if ob.get("active")]
         result["candles_5m"] = candles_5m
         
+        # BANKNIFTY Correlation Data (v3.2.0)
+        try:
+            bnf_symbol = "NSE:NIFTYBANK-INDEX"
+            bnf_quotes = await asyncio.to_thread(client.get_quotes, [bnf_symbol])
+            bnf_data = bnf_quotes.get(bnf_symbol, {})
+            result["bnf_spot"] = bnf_data.get("lp", 0)
+            
+            # Fetch 1H candles for BNF trend
+            bnf_candles_1h = await asyncio.to_thread(client.get_historical, bnf_symbol, "60", days_back=2)
+            from engine.key_levels import detect_trend
+            bnf_trend_res = detect_trend(bnf_candles_1h)
+            result["bnf_trend"] = bnf_trend_res.get("trend", "NEUTRAL")
+        except Exception as e:
+            logger.error(f"BNF Correlation Fetch Error: {e}")
+            result["bnf_spot"] = 0
+            result["bnf_trend"] = "UNKNOWN"
+        
+        # Heavyweight Monitoring (v3.3.0)
+        try:
+            heavy_symbols = ["NSE:RELIANCE-EQ", "NSE:HDFCBANK-EQ"]
+            h_quotes = await asyncio.to_thread(client.get_quotes, heavy_symbols)
+            h_data_list = []
+            for hs in heavy_symbols:
+                q = h_quotes.get(hs, {})
+                # Fetch trend for each heavyweight
+                h_candles_1h = await asyncio.to_thread(client.get_historical, hs, "60", days_back=2)
+                from engine.key_levels import detect_trend
+                h_tr = detect_trend(h_candles_1h)
+                h_data_list.append({
+                    "symbol": hs,
+                    "lp": q.get("lp", 0),
+                    "trend": h_tr.get("trend", "NEUTRAL")
+                })
+            result["heavyweights"] = h_data_list
+        except Exception as e:
+            logger.error(f"Heavyweight Fetch Error: {e}")
+            result["heavyweights"] = []
+
+        # Pass PnL context for AI
+        result["pnl_today"] = state.pnl_today
+        result["profit_target_met"] = state.profit_target_met
+
         # Filter out skipped signals
         if result["signals"]:
             filtered_signals = []
@@ -438,7 +493,16 @@ async def get_analysis(symbol="NSE:NIFTY50-INDEX"):
                 sig_id = f"{sig.get('type')}_{sig.get('reason')}_{bottom}"
                 if sig_id not in state.skipped_signals:
                     filtered_signals.append(sig)
-            result["signals"] = filtered_signals
+            
+            # AI Confirmation for filtered signals
+            confirmed_signals = []
+            for sig in filtered_signals:
+                if sig.get("type") in ("CALL", "PUT"):
+                    ai_result = await ai_engine.confirm_signal(symbol, sig, result)
+                    sig.update(ai_result)
+                confirmed_signals.append(sig)
+                
+            result["signals"] = confirmed_signals
         
         # Store in per-symbol cache
         _market_cache["analysis"][symbol] = {
@@ -477,6 +541,9 @@ async def test_signal():
             "confidence": 98,
             "entry_zone_bottom": 24350.0,
             "entry_zone_top": 24380.0,
+            "ai_confidence": 92,
+            "ai_rationale": "High confluence of OB + FVG near Support. Trend is strongly bullish.",
+            "ai_status": "confirmed",
             "advisory_only": False,
             "timestamp": datetime.now().timestamp()
         }
@@ -822,9 +889,26 @@ async def market_data_worker():
                             s["ltp"] = quotes_res[s["symbol"]].get("lp", s.get("ltp", 0))
                 _market_cache["last_update"] = datetime.now().timestamp()
             
-            # Legacy result handlers (can be removed later, but kept for compatibility)
             # Handle Orders
             orders = results.get("orders")
+
+            # --- PnL and LOSS TRACKING (v3.2.0) ---
+            positions = results.get("positions")
+            if isinstance(positions, dict) and positions.get("code") == 200:
+                pos_list = positions.get("netPositions", [])
+                # Store active positions for UI
+                _market_cache["active_positions"] = [p for p in pos_list if p.get("netQty", 0) != 0]
+                
+                realized_pnl = sum(float(p.get("realized_profit", 0)) for p in pos_list)
+                total_pnl = sum(float(p.get("realized_profit", 0)) + float(p.get("unrealized_profit", 0)) for p in pos_list)
+                
+                # Detect Loss (Realized PnL decreased)
+                if hasattr(state, '_last_realized_pnl') and realized_pnl < state._last_realized_pnl:
+                    state.record_loss()
+                    print(f"🛑 Loss Detected! Realized PnL: {realized_pnl} (was {state._last_realized_pnl})")
+                
+                state._last_realized_pnl = realized_pnl
+                state.update_pnl(total_pnl)
 
             # --- OPTION CHAIN SEQUENTIAL REFRESH (to avoid more 429) ---
             if tick % 15 == 0:
@@ -1067,7 +1151,8 @@ async def get_version():
         "version": VERSION,
         "name": "Sritej Trading Dashboard",
         "active_symbols": len(state.active_symbols),
-        "automation": state.automation_enabled
+        "automation": state.automation_enabled,
+        "ai_active": ai_engine.enabled
     }
 
 async def trailing_monitor():
@@ -1137,18 +1222,75 @@ async def trailing_monitor():
             
         await asyncio.sleep(2) # Monitor every 2 seconds
 
+async def automation_loop():
+    """Continuously monitor symbols and execute AI-confirmed signals."""
+    print("🤖 Automation Loop Started.")
+    while True:
+        try:
+            if not state.automation_enabled:
+                await asyncio.sleep(10)
+                continue
+
+            for symbol in state.active_symbols:
+                # 1. Get Analysis (AI confirmation happens inside)
+                analysis = await get_analysis(symbol)
+                if not analysis or not analysis.get("signals"):
+                    continue
+
+                # 2. Check for actionable signals
+                for sig in analysis["signals"]:
+                    if sig.get("type") not in ("CALL", "PUT"):
+                        continue
+                    
+                    # 3. Check technical confidence
+                    if sig.get("confidence", 0) < 80:
+                        continue
+                        
+                    # 4. Check AI confidence (CRITICAL)
+                    # If AI key is missing, this uses the mocked confidence
+                    ai_conf = sig.get("ai_confidence", 0)
+                    
+                    # Dynamic Threshold (v3.3.0)
+                    required_conf = 85
+                    if state.profit_target_met:
+                        required_conf = 95
+                        logger.info(f"🛡️ CONSERVATIVE MODE ACTIVE (Profit Target Met). Threshold: {required_conf}%")
+
+                    if ai_conf < required_conf:
+                        logger.info(f"⏭️ Skipping {symbol} {sig['type']}: AI Confidence {ai_conf}% < {required_conf}%.")
+                        continue
+
+                    # 5. Check if we can trade (Limits, existing trades)
+                    can_trade, reason = state.can_trade(symbol.replace(':','_'))
+                    if not can_trade:
+                        continue
+
+                    # 6. Execute Trade
+                    logger.info(f"🚀 AI CONFIRMED TRADE: {symbol} {sig['type']} at {analysis['spot']}")
+                    # Note: We'd call place_auto_order here. 
+                    # For safety in this beta, I'll log it first or implement a safe wrapper.
+                    # await execute_auto_trade(symbol, sig, analysis)
+
+        except Exception as e:
+            logger.error(f"Automation loop error: {e}")
+        
+        await asyncio.sleep(5) # Fast scan frequency (v3.2.0)
+
+
 @app.on_event("startup")
 async def startup_event():
     """Start background tasks."""
     global main_loop
     main_loop = asyncio.get_running_loop()
     
+    # Start background tasks
+    asyncio.create_task(trailing_monitor())
+    asyncio.create_task(automation_loop())
+    asyncio.create_task(market_data_worker())
+    
     # Start the Data Stream Thread for Real-time Prices
     print("📡 Initializing Real-time Data Stream...")
     threading.Thread(target=start_data_socket_thread, daemon=True).start()
-    
-    asyncio.create_task(market_data_worker())
-    asyncio.create_task(trailing_monitor())
 
 if __name__ == "__main__":
     import uvicorn

@@ -180,6 +180,12 @@ def _evaluate_signals(trend: Dict, key_levels: List[Dict], obs: List[Dict],
                 recent_swing_high = max(c["high"] for c in recent_candles) if recent_candles else setup["top"]
                 sl_price = max(recent_swing_high + 2.0, entry_price + 10.0)
 
+            # VIX Adjustment (v3.3.0)
+            if vix > 18:
+                sl_buffer = 4.0 # Widen SL in high volatility
+                if is_bull: sl_price -= sl_buffer
+                else: sl_price += sl_buffer
+
             confidence = min(95, 60 + (trend_strength / 5))
             if (is_bull and at_support) or (not is_bull and at_resistance):
                 confidence = min(95, confidence + 15)

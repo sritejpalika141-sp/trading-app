@@ -370,6 +370,17 @@ function initCharts() {
       borderColor: isLightMode ? '#cbd5e1' : '#2a3144',
       timeVisible: true,
       secondsVisible: false,
+      rightOffset: 5,
+      barSpacing: 8,
+    },
+    localization: {
+      priceFormatter: price => price.toFixed(2),
+      timeFormatter: (time) => {
+        // Since we add IST_OFFSET to the timestamp, we treat it as UTC to avoid double-shift
+        const date = new Date(time * 1000);
+        return date.getUTCHours().toString().padStart(2, '0') + ':' + 
+               date.getUTCMinutes().toString().padStart(2, '0');
+      },
     },
     handleScroll: { vertTouchDrag: false },
   };
@@ -1207,6 +1218,17 @@ function renderSignals(signals) {
       </div>`;
     }
 
+    // AI Rationale Section
+    const aiSection = sig.ai_rationale ? `
+      <div class="ai-box" style="margin-top:12px; padding:10px; background:rgba(99,179,237,0.08); border:1px solid rgba(99,179,237,0.2); border-radius:8px; font-size:11px; animation: signal-slide-in 0.6s ease-out">
+        <div style="color:var(--accent-blue); font-weight:700; display:flex; justify-content:space-between; align-items:center; margin-bottom:4px">
+          <span>🤖 AI CONFIRMATION</span>
+          <span style="background:var(--accent-blue); color:white; padding:1px 6px; border-radius:10px; font-size:9px">${sig.ai_confidence}%</span>
+        </div>
+        <div style="color:var(--text-secondary); line-height:1.4">"${sig.ai_rationale}"</div>
+      </div>
+    ` : '';
+
     // Actionable signal with BUY button
     return `<div class="signal-card ${isCall ? 'call' : 'put'} ${sig.confidence >= 80 ? 'high-conf' : ''}">
       <div class="signal-header">
@@ -1221,6 +1243,7 @@ function renderSignals(signals) {
       ${priceInfo}
       <div class="confidence-meter"><div class="confidence-fill ${sig.confidence >= 70 ? 'high' : sig.confidence >= 50 ? 'medium' : 'low'}" style="width:${sig.confidence}%"></div></div>
       <div class="signal-zone" style="margin-top:8px">Spot: ${currentSpot} · Zone: ${sig.entry_zone_bottom?.toFixed(2) || '--'} — ${sig.entry_zone_top?.toFixed(2) || '--'}</div>
+      ${aiSection}
       <div class="signal-actions">
         <button class="btn-buy" onclick="openOrderFromSignal(${i})">🟢 BUY</button>
         <button class="btn-skip" onclick="skipSignal(${i})">❌ SKIP</button>
@@ -1651,6 +1674,12 @@ async function fetchVersion() {
     
     const footerSymbols = document.getElementById('footerSymbols');
     if (footerSymbols) footerSymbols.textContent = `${data.active_symbols || 1} symbol${data.active_symbols !== 1 ? 's' : ''}`;
+    
+    const footerAI = document.getElementById('footerAI');
+    if (footerAI) {
+      footerAI.textContent = data.ai_active ? 'AI: Active' : 'AI: Offline';
+      footerAI.style.color = data.ai_active ? 'var(--bullish)' : 'var(--text-muted)';
+    }
   } catch (e) {
     console.log('Version fetch failed:', e);
   }

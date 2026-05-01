@@ -16,6 +16,11 @@ class TradingState:
         self.skipped_signals = [] # List of sig_id strings
         self.active_symbols = ["NSE:NIFTY50-INDEX"]
         self.hard_exit_triggered = False
+        self.last_trade_time = 0.0 # Unix timestamp
+        self.last_loss_time = 0.0  # Unix timestamp
+        self.cooldown_period_mins = 30 
+        self.daily_profit_target = 2500.0
+        self.profit_target_met = False
         self.load()
 
     def load(self):
@@ -90,6 +95,18 @@ class TradingState:
         if self.pnl_today <= -self.max_loss_per_day:
             return False, f"Daily loss limit reached (₹{self.max_loss_per_day})"
         
+        # Cooldown check (Loss protection)
+        import time
+        now = time.time()
+        if self.last_loss_time > 0:
+            elapsed = (now - self.last_loss_time) / 60
+            if elapsed < self.cooldown_period_mins:
+                return False, f"Cooldown active ({int(self.cooldown_period_mins - elapsed)}m left)"
+
+        # Double-fire protection (10s buffer between any trade action)
+        if now - self.last_trade_time < 10:
+            return False, "Rate limiting trades (10s buffer)"
+        
         # Prevent overlapping trades for the same instrument
         if any(t["symbol"].startswith(symbol_prefix) for t in self.active_auto_trades):
             return False, "Active trade in progress"
@@ -97,12 +114,21 @@ class TradingState:
         return True, "OK"
 
     def record_trade(self):
+        import time
         self.trades_today += 1
+        self.last_trade_time = time.time()
+        self.save()
+
+    def record_loss(self):
+        import time
+        self.last_loss_time = time.time()
         self.save()
 
     def update_pnl(self, current_pnl):
         # We track realized + unrealized for the day
         self.pnl_today = current_pnl
+        if self.pnl_today >= self.daily_profit_target:
+            self.profit_target_met = True
         self.save()
 
     def add_active_trade(self, symbol, entry_price, sl_points, side, sl_order_id, tgt_order_id):

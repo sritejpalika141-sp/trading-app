@@ -397,31 +397,30 @@ class FyersClient:
                 ce_data = quotes.get(ce_sym, {})
                 pe_data = quotes.get(pe_sym, {})
 
-            # Always append even if no data, to avoid empty UI
-            ce_entry = {
-                "strike": s,
-                "symbol": ce_sym,
-                "ltp": ce_data.get("lp", 0),
-                "bid": ce_data.get("bid", 0),
-                "ask": ce_data.get("ask", 0),
-                "volume": ce_data.get("volume", 0),
-                "oi": ce_data.get("oi", 0),
-                "prev_close": ce_data.get("prev_close_price", 0),
-                "change_pct": ce_data.get("chp", 0),
-            }
-            pe_entry = {
-                "strike": s,
-                "symbol": pe_sym,
-                "ltp": pe_data.get("lp", 0),
-                "bid": pe_data.get("bid", 0),
-                "ask": pe_data.get("ask", 0),
-                "volume": pe_data.get("volume", 0),
-                "oi": pe_data.get("oi", 0),
-                "prev_close": pe_data.get("prev_close_price", 0),
-                "change_pct": pe_data.get("chp", 0),
-            }
-            calls.append(ce_entry)
-            puts.append(pe_entry)
+                ce_entry = {
+                    "strike": s,
+                    "symbol": ce_sym,
+                    "ltp": ce_data.get("lp", 0),
+                    "bid": ce_data.get("bid", 0),
+                    "ask": ce_data.get("ask", 0),
+                    "volume": ce_data.get("volume", 0),
+                    "oi": ce_data.get("oi", 0),
+                    "prev_close": ce_data.get("prev_close_price", 0),
+                    "change_pct": ce_data.get("chp", 0),
+                }
+                pe_entry = {
+                    "strike": s,
+                    "symbol": pe_sym,
+                    "ltp": pe_data.get("lp", 0),
+                    "bid": pe_data.get("bid", 0),
+                    "ask": pe_data.get("ask", 0),
+                    "volume": pe_data.get("volume", 0),
+                    "oi": pe_data.get("oi", 0),
+                    "prev_close": pe_data.get("prev_close_price", 0),
+                    "change_pct": pe_data.get("chp", 0),
+                }
+                calls.append(ce_entry)
+                puts.append(pe_entry)
 
         return {"calls": calls, "puts": puts, "atm": atm}
 
